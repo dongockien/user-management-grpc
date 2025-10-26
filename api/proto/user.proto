@@ -1,0 +1,251 @@
+syntax = "proto3";
+package user;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto"; // ✅ Dùng cho HTTP mapping
+
+option go_package = "user-management-grpc/api/proto;proto";
+
+
+// ==========================
+// 🧩 User messages
+// ==========================
+message User {
+  string id = 1 [json_name = "id"];
+  string email = 2 [json_name = "email"];
+  string full_name = 3 [json_name = "fullName"];
+  string referrer_id = 4 [json_name = "referrerId"];
+  google.protobuf.Timestamp created_at = 5 [json_name = "createdAt"];
+}
+
+// Dữ liệu khi client yêu cầu tạo user mới
+message CreateUserRequest {
+  string email = 1 [json_name = "email"];
+  string password = 2 [json_name = "password"];
+  string full_name = 3 [json_name = "fullName"];
+  string referrer_id = 4 [json_name = "referrerId"];
+}
+
+// Yêu cầu lấy thông tin user theo ID
+message GetUserRequest {
+  string id = 1 [json_name = "id"];
+}
+
+// Yêu cầu cập nhật thông tin user
+message UpdateUserRequest {
+  string id = 1 [json_name = "id"];
+  string email = 2 [json_name = "email"];
+  string full_name = 3 [json_name = "fullName"];
+}
+
+// Yêu cầu xóa user theo ID
+message DeleteUserRequest {
+  string id = 1 [json_name = "id"];
+}
+
+// Yêu cầu liệt kê danh sách user (có phân trang)
+message ListUsersRequest {
+  int32 page = 1 [json_name = "page"];
+  int32 page_size = 2 [json_name = "pageSize"];
+}
+
+// Phản hồi khi gọi ListUsers
+message ListUsersResponse {
+  repeated User users = 1 [json_name = "users"];
+  int32 total = 2 [json_name = "total"];
+}
+
+// Yêu cầu lấy danh sách người được giới thiệu bởi một user
+message GetReferralsRequest {
+  string user_id = 1 [json_name = "userId"];
+}
+
+// Phản hồi danh sách người được giới thiệu
+message GetReferralsResponse {
+  repeated User referrals = 1 [json_name = "referrals"];
+}
+
+// ==========================
+// 👑 Admin messages
+// ==========================
+message AdminMetricsRequest {
+  string time_range = 1 [json_name = "timeRange"]; // today, week, month, year
+}
+
+message AdminMetricsResponse {
+  int32 total_users = 1 [json_name = "totalUsers"];
+  int32 active_users = 2 [json_name = "activeUsers"];
+  int32 new_users_today = 3 [json_name = "newUsersToday"];
+  int32 referral_count = 4 [json_name = "referralCount"];
+  float growth_rate = 5 [json_name = "growthRate"];
+  string time_range = 6 [json_name = "timeRange"];
+}
+
+// Tạo hàng loạt user (Bulk)
+message BulkCreateRequest {
+  repeated CreateUserRequest users = 1 [json_name = "users"];
+}
+
+message BulkCreateResponse {
+  int32 success_count = 1 [json_name = "successCount"];
+  int32 failure_count = 2 [json_name = "failureCount"];
+  repeated string errors = 3 [json_name = "errors"];
+}
+
+// ==========================
+// 🔐 Auth messages
+// ==========================
+message LoginRequest {
+  string email = 1 [json_name = "email"];
+  string password = 2 [json_name = "password"];
+}
+
+message LoginResponse {
+  string token = 1 [json_name = "token"];
+  User user = 2 [json_name = "user"];
+}
+
+message AuthRequest {
+  string token = 1 [json_name = "token"];
+}
+
+message AuthResponse {
+  bool valid = 1 [json_name = "valid"];
+  string user_id = 2 [json_name = "userId"];
+}
+
+message RefreshTokenRequest {
+  string refresh_token = 1 [json_name = "refreshToken"];
+}
+
+message LogoutRequest {
+  string token = 1 [json_name = "userId"];
+}
+
+// ==========================
+// 📧 Notification messages
+// ==========================
+message NotificationRequest {
+  string user_id = 1 [json_name = "userId"];
+  string email = 2 [json_name = "email"];
+  string type = 3 [json_name = "type"];
+  string message = 4 [json_name = "message"];
+}
+
+message NotificationResponse {
+  bool success = 1 [json_name = "success"];
+  string message = 2 [json_name = "message"];
+}
+
+// ==========================
+// ⚙️ Services
+// ==========================
+
+// -------- Auth Service --------
+service AuthService {
+  // Đăng nhập, trả về JWT + thông tin user
+  rpc Login(LoginRequest) returns (LoginResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/login"
+      body: "*"
+    };
+  }
+
+  // Kiểm tra tính hợp lệ của token
+  rpc ValidateToken(AuthRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/validate"
+      body: "*"
+    };
+  }
+
+  // Làm mới JWT bằng refresh token
+  rpc RefreshToken(RefreshTokenRequest) returns (LoginResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/refresh"
+      body: "*"
+    };
+  }
+
+  // Đăng xuất
+  rpc Logout(LogoutRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/api/v1/auth/logout"
+      body: "*"
+    };
+  }
+}
+
+// -------- User Service --------
+service UserService {
+  rpc CreateUser(CreateUserRequest) returns (User) {
+    option (google.api.http) = {
+      post: "/api/v1/users"
+      body: "*"
+    };
+  }
+
+  rpc GetUser(GetUserRequest) returns (User) {
+    option (google.api.http) = {
+      get: "/api/v1/users/{id}"
+    };
+  }
+
+  rpc UpdateUser(UpdateUserRequest) returns (User) {
+    option (google.api.http) = {
+      put: "/api/v1/users/{id}"
+      body: "*"
+    };
+  }
+
+  rpc DeleteUser(DeleteUserRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/users/{id}"
+    };
+  }
+
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/users"
+    };
+  }
+
+  rpc GetUserReferrals(GetReferralsRequest) returns (GetReferralsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/users/{user_id}/referrals"
+    };
+  }
+
+  rpc GetAdminMetrics(AdminMetricsRequest) returns (AdminMetricsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/admin/metrics"
+    };
+  }
+
+  rpc BulkCreateUsers(BulkCreateRequest) returns (BulkCreateResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/users/bulk"
+      body: "*"
+    };
+  }
+
+  rpc ExportUsers(ListUsersRequest) returns (stream User);
+}
+
+// -------- Notification Service --------
+service NotificationService {
+  rpc SendWelcomeEmail(NotificationRequest) returns (NotificationResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/notifications/welcome"
+      body: "*"
+    };
+  }
+
+  rpc SendNotification(NotificationRequest) returns (NotificationResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/notifications/send"
+      body: "*"
+    };
+  }
+}

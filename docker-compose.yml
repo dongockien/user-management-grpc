@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: user-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: userdb
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: user-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  scylla:
+    image: scylladb/scylla:5.2
+    container_name: user-scylla
+    ports:
+      - "9042:9042"
+    volumes:
+      - scylla_data:/var/lib/scylla
+    command: --smp 1 --memory 768M --overprovisioned 1 # Tăng nhẹ memory cho ổn định
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: ./deployments/Dockerfile  # 🔹 TỐI ƯU: Di chuyển Dockerfile vào thư mục deployments
+    container_name: user-grpc-app
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+      - "6060:6060" # 🔹 THÊM: Expose pprof port
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      scylla:
+        condition: service_healthy
+    # 🔹 TỐI ƯU: Sử dụng env_file để quản lý tập trung và tương thích với config.go mới
+    env_file:
+      - .env
+    environment:
+      - MYSQL_HOST=mysql
+      - REDIS_HOST=redis
+      - SCYLLA_HOSTS=scylla
+      - APP_ENV=docker # Báo cho code biết đang chạy trong Docker
+    restart: unless-stopped
+    # 🔹 TỐI ƯU: Chỉ mount code source để live-reload, không ghi đè binary
+    # volumes:
+    #   - .:/app
+
+volumes:
+  mysql_data:
+  redis_data:
+  scylla_data:
