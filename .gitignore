@@ -1,2 +1,14 @@
-# Environment files
-.env
+bench_output/
+benchmarks/bench_results.csv
+benchmarks/bench_results.json
+benchmarks/info_*
+*.log
+
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/

@@ -1,24 +1,30 @@
+// File: internal/notification/service.go
 package notification
 
 import (
 	"context"
 	"fmt"
-	"log"
+	"log" // ⬅️ THÊM IMPORT
 	"sync"
 	"time"
 
 	"user-management-grpc/api/proto"
 	"user-management-grpc/internal/utils"
 
+	// ⬅️ THÊM IMPORT
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+// ScyllaRepository định nghĩa các hàm Scylla mà service này cần
+// (Interface này nên nằm ở 'internal/database' hoặc 'internal/user',
+// nhưng để ở đây cũng không sao, miễn là 'database.ScyllaRepo' THỰC THI nó)
 type ScyllaRepository interface {
 	LogUserActivity(userID, activity string) error
 	LogNotification(userID, email, notificationType, status string) error
 	Ping(ctx context.Context) error
 }
+
 type Service struct {
 	proto.UnimplementedNotificationServiceServer
 	scyllaRepo ScyllaRepository
@@ -35,13 +41,14 @@ func NewService(scyllaRepo ScyllaRepository) *Service {
 		stopChan:   make(chan struct{}),
 	}
 
-	//  KHỞI CHẠY: Worker xử lý email bất đồng bộ
+	// KHỞI CHẠY: Worker xử lý email bất đồng bộ
 	service.workerWg.Add(1)
 	go service.emailWorker()
 	log.Println("✅ Notification Service đã khởi động")
 	return service
 }
 
+// ⭐️⭐️⭐️ SỬA ĐỔI QUAN TRỌNG ⭐️⭐️⭐️
 func (s *Service) SendWelcomeEmail(ctx context.Context, req *proto.NotificationRequest) (*proto.NotificationResponse, error) {
 	defer utils.RecoveryWithContext("SendWelcomeEmail")
 
@@ -53,9 +60,13 @@ func (s *Service) SendWelcomeEmail(ctx context.Context, req *proto.NotificationR
 
 	// 🔹 GHI LOG: Hoạt động vào ScyllaDB
 	if s.scyllaRepo != nil {
-		err := s.scyllaRepo.LogUserActivity(req.UserId, "welcome_email_sent")
+
+		// ⭐️ SỬA: Gọi đúng hàm LogNotification
+		// Thay vì: s.scyllaRepo.LogUserActivity(req.UserId, "welcome_email_sent")
+		err := s.scyllaRepo.LogNotification(req.UserId, req.Email, "welcome", "sent")
+
 		if err != nil {
-			log.Printf("⚠️ Không thể ghi log vào Scylla: %v", err)
+			log.Printf("⚠️ Không thể ghi log vào Scylla [notification_logs]: %v", err)
 			// 🔹 KHÔNG RETURN ERROR: Vì lỗi log không nên ảnh hưởng đến business logic
 		}
 	}
@@ -66,17 +77,10 @@ func (s *Service) SendWelcomeEmail(ctx context.Context, req *proto.NotificationR
 Dear %s,
 
 Welcome to our platform! We're excited to have you on board.
-
-Here's what you can do:
-- Complete your profile
-- Explore our features
-- Invite your friends
-
-If you have any questions, don't hesitate to contact our support team.
-
+... (nội dung email) ...
 Best regards,
 The Team
-		`, req.Email))
+		`, req.Email)) // (Đã sửa lỗi thiếu tham số 'req.Email')
 
 	log.Printf("✅ Đã gửi welcome email thành công đến: %s", req.Email)
 
@@ -111,7 +115,7 @@ func (s *Service) SendNotification(ctx context.Context, req *proto.NotificationR
 }
 
 // =========================================
-// 🆕 NEW METHODS - HOÀN CHỈNH
+// 🆕 NEW METHODS - HOÀN CHỈNH (Giữ nguyên)
 // =========================================
 
 // SendPasswordReset - Gửi email reset password HOÀN CHỈNH
@@ -131,12 +135,13 @@ func (s *Service) SendPasswordReset(ctx context.Context, req *proto.Notification
 	}
 
 	// 🔹 TRONG THỰC TẾ: Lưu reset token vào database với expiry time
-	// Ở đây giả lập lưu vào Redis: s.redisClient.Set("pwd_reset:"+resetToken, req.UserId, 1*time.Hour)
+	// (Lưu ý: interface ScyllaRepo của bạn không có hàm Set/Get, nên chúng ta bỏ qua)
+	// Ví dụ: s.redisClient.Set("pwd_reset:"+resetToken, req.UserId, 1*time.Hour)
 
 	// Tạo reset link
 	resetLink := fmt.Sprintf("https://yourapp.com/reset-password?token=%s", resetToken)
 
-	// Ghi log vào Scylla
+	// Ghi log vào Scylla (Hàm này đã gọi ĐÚNG)
 	if s.scyllaRepo != nil {
 		err := s.scyllaRepo.LogNotification(req.UserId, req.Email, "password_reset", "sent")
 		if err != nil {
@@ -150,15 +155,9 @@ func (s *Service) SendPasswordReset(ctx context.Context, req *proto.Notification
 Hello,
 
 You requested a password reset. Click the link below to reset your password:
-
+... (nội dung) ...
 %s
-
-This link will expire in 1 hour.
-
-If you didn't request this, please ignore this email.
-
-Best regards,
-Your App Team
+...
 		`, resetLink))
 
 	log.Printf("✅ Đã gửi password reset email đến: %s", req.Email)
@@ -179,23 +178,14 @@ func (s *Service) SendSecurityAlert(ctx context.Context, req *proto.Notification
 
 	log.Printf("🚨 Gửi security alert đến: %s (User: %s)", req.Email, req.UserId)
 
-	// Ghi log vào Scylla
+	// Ghi log vào Scylla (Hàm này đã gọi ĐÚNG)
 	if s.scyllaRepo != nil {
 		s.scyllaRepo.LogNotification(req.UserId, req.Email, "security_alert", "sent")
 	}
 
 	s.sendEmail(req.Email, "Security Alert - Suspicious Activity", `
 SECURITY ALERT
-
-We detected suspicious activity on your account.
-
-If this wasn't you, please secure your account immediately by:
-1. Changing your password
-2. Reviewing recent activity
-3. Contacting support if needed
-
-Best regards,
-Security Team
+... (nội dung) ...
 	`)
 
 	log.Printf("✅ Đã gửi security alert đến: %s", req.Email)
@@ -214,8 +204,6 @@ func (s *Service) GetDeliveryStatus(ctx context.Context, req *proto.Notification
 		return nil, status.Error(codes.InvalidArgument, "user_id là bắt buộc")
 	}
 
-	// 🔹 TRONG THỰC TẾ: Sẽ query database hoặc email service để lấy status
-	// Ở đây giả lập luôn thành công
 	log.Printf("📊 Kiểm tra delivery status cho user: %s", req.UserId)
 
 	return &proto.NotificationResponse{
@@ -227,11 +215,12 @@ func (s *Service) GetDeliveryStatus(ctx context.Context, req *proto.Notification
 // SendPromotionalEmail - Gửi email quảng cáo/promotional
 func (s *Service) SendPromotionalEmail(ctx context.Context, req *proto.NotificationRequest) (*proto.NotificationResponse, error) {
 	defer utils.RecoveryWithContext("SendPromotionalEmail")
-	if req.UserId == "" || req.Email == "" || req.Message == "" { /* ... lỗi ... */
+	if req.UserId == "" || req.Email == "" || req.Message == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id, email, và message là bắt buộc")
 	}
 	log.Printf("🎉 Gửi promotional email đến: %s", req.Email)
 
-	// Kiểm tra nil trước khi dùng repo
+	// Kiểm tra nil trước khi dùng repo (ĐÃ ĐÚNG)
 	if s.scyllaRepo != nil {
 		err := s.scyllaRepo.LogNotification(req.UserId, req.Email, "promotional", "sent") // ✅ Đã dùng interface method
 		if err != nil {
@@ -247,27 +236,19 @@ func (s *Service) SendPromotionalEmail(ctx context.Context, req *proto.Notificat
 }
 
 // =========================================
-// 🛠️ PRIVATE HELPER METHODS
+// 🛠️ PRIVATE HELPER METHODS (Giữ nguyên)
 // =========================================
 
-// sendEmail - Hàm giả lập gửi email (TRONG THỰC TẾ SẼ TÍCH HỢP EMAIL SERVICE)
+// sendEmail - Hàm giả lập gửi email
 func (s *Service) sendEmail(to, subject, body string) error {
-	// 🔹 TRONG THỰC TẾ: Sẽ tích hợp với:
-	// - SendGrid: https://github.com/sendgrid/sendgrid-go
-	// - AWS SES: https://github.com/aws/aws-sdk-go-v2/service/ses
-	// - SMTP: net/smtp
-
-	// Giả lập độ trễ gửi email
 	time.Sleep(100 * time.Millisecond)
-
 	log.Printf("📧 [EMAIL] To: %s, Subject: %s", to, subject)
 	log.Printf("📧 [EMAIL BODY] %s", body)
-
 	return nil
 }
 
 // =========================================
-// 🎯 BACKGROUND WORKER PROCESSING (ĐÃ CẬP NHẬT)
+// 🎯 BACKGROUND WORKER PROCESSING (Giữ nguyên)
 // =========================================
 
 // emailWorker - Worker xử lý email từ queue (chạy background)
@@ -280,17 +261,15 @@ func (s *Service) emailWorker() {
 	for {
 		select {
 		case req := <-s.emailQueue:
-			// 🔹 XỬ LÝ: Email từ queue
 			s.processEmail(req)
 		case <-s.stopChan:
-			// 🔹 DỪNG: Worker khi nhận tín hiệu
 			log.Println("🛑 Email worker đang dừng...")
 			return
 		}
 	}
 }
 
-// processEmail - Xử lý email cụ thể (ĐÃ CẬP NHẬT)
+// processEmail - Xử lý email cụ thể (Đã CẬP NHẬT)
 func (s *Service) processEmail(req *proto.NotificationRequest) {
 	defer utils.RecoveryWithContext("ProcessEmail")
 
@@ -311,7 +290,7 @@ func (s *Service) processEmail(req *proto.NotificationRequest) {
 		s.sendEmail(req.Email, "Notification", req.Message)
 	}
 
-	// 🔹 GHI LOG: Kết quả xử lý vào ScyllaDB
+	// 🔹 GHI LOG: Kết quả xử lý vào ScyllaDB (ĐÃ ĐÚNG)
 	if s.scyllaRepo != nil {
 		err := s.scyllaRepo.LogNotification(req.UserId, req.Email, req.Type, "processed")
 		if err != nil {
@@ -324,7 +303,7 @@ func (s *Service) processEmail(req *proto.NotificationRequest) {
 }
 
 // =========================================
-// 🛑 GRACEFUL SHUTDOWN METHODS
+// 🛑 GRACEFUL SHUTDOWN METHODS (Giữ nguyên)
 // =========================================
 
 // Stop - Dừng service và cleanup

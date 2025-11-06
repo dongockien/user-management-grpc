@@ -1,3 +1,4 @@
+// File: internal/auth/service.go
 package auth
 
 import (
@@ -20,7 +21,6 @@ import (
 )
 
 // 🧱 1. Interface Redis — thêm context cho tất cả method
-
 type RedisClient interface {
 	Set(ctx context.Context, key, value string, expiration time.Duration) error
 	Get(ctx context.Context, key string) (string, error)
@@ -29,16 +29,12 @@ type RedisClient interface {
 	Ping(ctx context.Context) error
 
 	// Các hàm ZSET cho blacklist
-	// ZAdd(ctx,key, score, member)
 	ZAdd(ctx context.Context, key string, socre float64, member string) error
-	// ZRemRangeByScore(ctx, key, min, max)
 	ZRemRangeByScore(ctx context.Context, key, min, max string) (int64, error)
-	// ZScore(ctx, key, member)-> trả về socre (timestamp)
 	ZScore(ctx context.Context, key, member string) (float64, error)
 }
 
 // 🧩 2. MockRedisClient — mô phỏng Redis (dùng cho dev)
-
 type MockRedisClient struct {
 	data map[string]string
 	zset map[string]map[string]float64 // Giả lập ZSET
@@ -128,15 +124,14 @@ func (r *MockRedisClient) ZScore(ctx context.Context, key, member string) (float
 }
 
 // ⚙️ 3. Service struct — giữ secret trong biến jwtSecret
-
 type Service struct {
 	proto.UnimplementedAuthServiceServer
-	userRepo       user.Repository
-	redisClient    RedisClient
-	jwtSecret      string
-	tokenExpiry    time.Duration
+	userRepo     user.Repository
+	redisClient  RedisClient
+	jwtSecret    string
+	tokenExpiry  time.Duration
 	activeSessions *utils.SafeMap
-	mu             sync.RWMutex
+	mu           sync.RWMutex
 }
 
 func NewService(userRepo user.Repository, redisClient RedisClient, jwtSecret string, tokenExpiry time.Duration) *Service {
@@ -150,7 +145,6 @@ func NewService(userRepo user.Repository, redisClient RedisClient, jwtSecret str
 }
 
 // 🔑 4. Login — verify password, generate JWT, cache Redis
-
 func (s *Service) Login(ctx context.Context, req *proto.LoginRequest) (*proto.LoginResponse, error) {
 	defer utils.RecoveryWithContext("Login")
 
@@ -181,38 +175,13 @@ func (s *Service) Login(ctx context.Context, req *proto.LoginRequest) (*proto.Lo
 			log.Printf("Failed to update last_login_at for user %s: %v", userObj.ID, err)
 		}
 	}()
+
 	// 🔐 Tạo JWT token
 	jti := uuid.New().String()
 	token, err := utils.GenerateJWT(userObj.ID, s.jwtSecret, s.tokenExpiry, jti)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "lỗi tạo token")
 	}
-
-	// 	// 💾 Lưu token vào Redis (bọc timeout + context)
-	// 	go func() {
-	// 		defer utils.RecoveryWithContext("Redis SET in Login")
-	// 		ctxR, cancelR := context.WithTimeout(context.Background(), 2*time.Second)
-	// 		defer cancelR()
-
-	// 		if err := s.redisClient.Set(ctxR, "token:"+userObj.ID, token, s.tokenExpiry); err != nil {
-	// 			log.Printf("⚠️ Redis cache failed: %v", err)
-	// 		} else {
-	// 			log.Printf("✅ Token cached for user %s", userObj.ID)
-	// 		}
-	// 	}()
-
-	// 	// 🧠 Cache trong bộ nhớ tạm
-	// 	s.activeSessions.Set(userObj.ID, token)
-
-	// 	return &proto.LoginResponse{
-	// 		Token: token,
-	// 		User: &proto.User{
-	// 			Id:       userObj.ID,
-	// 			Email:    userObj.Email,
-	// 			FullName: userObj.FullName,
-	// 		},
-	// 	}, nil
-	// }
 
 	log.Printf("User %s đăng nhập thành công. JTI: %s", userObj.ID, jti)
 	return &proto.LoginResponse{
@@ -221,12 +190,13 @@ func (s *Service) Login(ctx context.Context, req *proto.LoginRequest) (*proto.Lo
 			Id:       userObj.ID,
 			Email:    userObj.Email,
 			FullName: userObj.FullName,
+			// ⭐️ SỬA: Trả về Role khi Login
+			Role:     userObj.Role, 
 		},
 	}, nil
 }
 
 // 🧩 5. ValidateToken — kiểm tra blacklist
-
 func (s *Service) ValidateToken(ctx context.Context, req *proto.AuthRequest) (*proto.AuthResponse, error) {
 	defer utils.RecoveryWithContext("ValidateToken")
 
@@ -265,9 +235,16 @@ func (s *Service) RefreshToken(ctx context.Context, req *proto.RefreshTokenReque
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, "refresh token không hợp lệ")
 	}
+
+	// ⭐️ SỬA: Khi Refresh, chúng ta cũng cần lấy Role mới nhất
+	userObj, err := s.userRepo.GetByID(ctx, claims.UserID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "lỗi lấy thông tin user khi refresh: %v", err)
+	}
+
 	// Token mới cũng cần JTI mới
 	newJTI := uuid.New().String()
-	newToken, err := utils.GenerateJWT(claims.UserID, s.jwtSecret, s.tokenExpiry,newJTI)
+	newToken, err := utils.GenerateJWT(claims.UserID, s.jwtSecret, s.tokenExpiry, newJTI)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "lỗi tạo token mới")
 	}
@@ -275,7 +252,13 @@ func (s *Service) RefreshToken(ctx context.Context, req *proto.RefreshTokenReque
 	log.Printf("✅ Token refreshed for user: %s (New JTI: %s)", claims.UserID, newJTI)
 	return &proto.LoginResponse{
 		Token: newToken,
-		User:  &proto.User{Id: claims.UserID},
+		User: &proto.User{
+			Id:       userObj.ID,
+			// ⭐️ SỬA: Trả về thông tin user đầy đủ (bao gồm cả Role)
+			Email:    userObj.Email,
+			FullName: userObj.FullName,
+			Role:     userObj.Role,
+		},
 	}, nil
 }
 
@@ -322,7 +305,8 @@ func (s *Service) Logout(ctx context.Context, req *proto.LogoutRequest) (*emptyp
 	return &emptypb.Empty{}, nil
 }
 
-// Thêm method GetUserRole (Lỗi 6 & 7)
+
+// Thêm method GetUserRole
 func (s *Service) GetUserRole(ctx context.Context, userID string) (string, error) {
 	// Dùng repo đã có để lấy user
 	user, err := s.userRepo.GetByID(ctx, userID)
@@ -330,14 +314,21 @@ func (s *Service) GetUserRole(ctx context.Context, userID string) (string, error
 		return "", status.Errorf(codes.NotFound, "không tìm thấy user %s: %v", userID, err)
 	}
 
-	// 🔹 TODO: Bạn cần thêm trường 'Role' vào user.Model và bảng 'users' trong DB
-	// return user.Role, nil // Đây là code đúng sau khi cập nhật model
-
-	// Tạm thời hardcode logic để hết lỗi:
-	if user.Email == "admin@example.com" { // Thay bằng email admin thật của bạn
-		return "admin", nil
+	// 🔹 XÓA BỎ LOGIC HARD-CODE
+	// if user.Email == "admin@example.com" { 
+	//     return "admin", nil
+	// }
+	// return "user", nil
+	
+	// === LOGIC ĐÚNG ===
+	// Trả về Role thật sự (ví dụ: "admin" hoặc "user")
+	// mà userRepo đã đọc được từ Redis (hoặc MySQL)
+	if user.Role == "" {
+		// An toàn: Nếu Role bị rỗng, coi như là 'user'
+		return "user", nil
 	}
-	return "user", nil
+	
+	return user.Role, nil
 }
 
 // Ping - Kiểm tra sức khỏe kết nối Redis (cho Scheduler)

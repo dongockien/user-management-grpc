@@ -17,6 +17,7 @@ message User {
   string full_name = 3 [json_name = "fullName"];
   string referrer_id = 4 [json_name = "referrerId"];
   google.protobuf.Timestamp created_at = 5 [json_name = "createdAt"];
+  string role = 6 [json_name = "role"];
 }
 
 // Dữ liệu khi client yêu cầu tạo user mới
@@ -120,7 +121,7 @@ message RefreshTokenRequest {
 }
 
 message LogoutRequest {
-  string token = 1 [json_name = "userId"];
+  string token = 1 [json_name = "token"];
 }
 
 // ==========================

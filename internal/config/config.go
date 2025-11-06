@@ -26,12 +26,14 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	MySQLDSN   string // Sẽ được xây dựng động
-	RedisAddr  string
-	RedisPass  string
-	RedisDB    int
-	ScyllaAddr string
+	MySQLDSN       string // Sẽ được xây dựng động
+	RedisAddr      string
+	RedisPass      string
+	RedisDB        int
+	ScyllaAddr     string
 	ScyllaKeyspace string
+
+	UseRedisForUsers bool
 }
 
 type JWTConfig struct {
@@ -76,12 +78,13 @@ func LoadConfig() (*Config, error) {
 			PProfPort: getEnv("PPROF_PORT", "6060"),
 		},
 		Database: DatabaseConfig{
-			MySQLDSN:   mysqlDSN, // Gán DSN đã được xây dựng đúng
-			RedisAddr:  redisAddr,
-			RedisPass:  getEnv("REDIS_PASSWORD", ""),
-			RedisDB:    getEnvAsInt("REDIS_DB", 0),
-			ScyllaAddr: getEnv("SCYLLA_HOSTS", "localhost:9042"),
-		ScyllaKeyspace: getEnv("SCYLLA_KEYSPACE", "user_keyspace"),
+			MySQLDSN:         mysqlDSN, // Gán DSN đã được xây dựng đúng
+			RedisAddr:        redisAddr,
+			RedisPass:        getEnv("REDIS_PASSWORD", ""),
+			RedisDB:          getEnvAsInt("REDIS_DB", 0),
+			ScyllaAddr:       getEnv("SCYLLA_HOSTS", "localhost:9042"),
+			ScyllaKeyspace:   getEnv("SCYLLA_KEYSPACE", "user_keyspace"),
+			UseRedisForUsers: getEnvAsBool("USE_REDIS_REPO", false),
 		},
 		JWT: JWTConfig{
 			Secret: getEnv("JWT_SECRET", "supersecretkey123"),
@@ -105,6 +108,14 @@ func getEnv(key, defaultVal string) string {
 func getEnvAsInt(key string, defaultVal int) int {
 	valStr := getEnv(key, "")
 	if val, err := strconv.Atoi(valStr); err == nil {
+		return val
+	}
+	return defaultVal
+}
+// getEnvAsBool helper function
+func getEnvAsBool(key string, defaultVal bool) bool {
+	valStr := getEnv(key, "")
+	if val, err := strconv.ParseBool(valStr); err == nil {
 		return val
 	}
 	return defaultVal

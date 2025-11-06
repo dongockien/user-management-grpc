@@ -7,8 +7,9 @@ import (
 	"log"
 	"time"
 
-	"github.com/google/uuid"
 	"user-management-grpc/internal/utils" // ✅ dùng utils thay cho bcrypt trực tiếp
+
+	"github.com/google/uuid"
 )
 
 // Cấu trúc Repository
@@ -20,7 +21,6 @@ type MySQLRepository struct {
 func NewMySQLRepository(db *sql.DB) *MySQLRepository {
 	return &MySQLRepository{db: db}
 }
-
 
 // 🔹 CREATE USER
 
@@ -36,7 +36,9 @@ func (r *MySQLRepository) Create(ctx context.Context, u *User) error {
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = time.Now()
 	}
-
+	if u.Role == "" {
+		u.Role = "user"
+	}
 	// ✅ Dùng utils.HashPassword thay cho bcrypt trực tiếp
 	hashedPassword, err := utils.HashPassword(u.Password)
 	if err != nil {
@@ -44,8 +46,8 @@ func (r *MySQLRepository) Create(ctx context.Context, u *User) error {
 	}
 
 	query := `
-		INSERT INTO users (id, email, password, full_name, referrer_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO users (id, email, password, full_name, referrer_id, created_at, role)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err = r.db.ExecContext(ctx, query,
 		u.ID,
@@ -54,6 +56,7 @@ func (r *MySQLRepository) Create(ctx context.Context, u *User) error {
 		u.FullName,
 		u.ReferrerID,
 		u.CreatedAt,
+		u.Role,
 	)
 	if err != nil {
 		return fmt.Errorf("lỗi khi tạo user: %v", err)
@@ -63,7 +66,6 @@ func (r *MySQLRepository) Create(ctx context.Context, u *User) error {
 	return nil
 }
 
-
 // 🔹 GET USER BY ID
 
 func (r *MySQLRepository) GetByID(ctx context.Context, id string) (*User, error) {
@@ -71,7 +73,7 @@ func (r *MySQLRepository) GetByID(ctx context.Context, id string) (*User, error)
 	defer cancel()
 
 	query := `
-		SELECT id, email, password, full_name, referrer_id, created_at
+		SELECT id, email, password, full_name, referrer_id, created_at, role
 		FROM users WHERE id = ?
 	`
 
@@ -84,6 +86,7 @@ func (r *MySQLRepository) GetByID(ctx context.Context, id string) (*User, error)
 		&user.FullName,
 		&referrerID,
 		&user.CreatedAt,
+		&user.Role,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user không tồn tại: %s", id)
@@ -98,7 +101,6 @@ func (r *MySQLRepository) GetByID(ctx context.Context, id string) (*User, error)
 	return &user, nil
 }
 
-
 // 🔹 GET USER BY EMAIL
 
 func (r *MySQLRepository) GetByEmail(ctx context.Context, email string) (*User, error) {
@@ -106,7 +108,7 @@ func (r *MySQLRepository) GetByEmail(ctx context.Context, email string) (*User, 
 	defer cancel()
 
 	query := `
-		SELECT id, email, password, full_name, referrer_id, created_at
+		SELECT id, email, password, full_name, referrer_id, created_at, role
 		FROM users WHERE email = ?
 	`
 
@@ -119,6 +121,7 @@ func (r *MySQLRepository) GetByEmail(ctx context.Context, email string) (*User, 
 		&user.FullName,
 		&referrerID,
 		&user.CreatedAt,
+		&user.Role,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user không tồn tại: %s", email)
@@ -133,7 +136,6 @@ func (r *MySQLRepository) GetByEmail(ctx context.Context, email string) (*User, 
 	return &user, nil
 }
 
-
 // 🔹 UPDATE USER
 
 func (r *MySQLRepository) Update(ctx context.Context, u *User) error {
@@ -142,7 +144,7 @@ func (r *MySQLRepository) Update(ctx context.Context, u *User) error {
 
 	query := `
 		UPDATE users
-		SET email = ?, full_name = ?
+		SET full_name = ?, role = ?
 		WHERE id = ?
 	`
 	result, err := r.db.ExecContext(ctx, query, u.Email, u.FullName, u.ID)
@@ -161,7 +163,6 @@ func (r *MySQLRepository) Update(ctx context.Context, u *User) error {
 	log.Printf("✅ Đã cập nhật user: %s", u.ID)
 	return nil
 }
-
 
 // 🔹 DELETE USER
 
@@ -187,7 +188,6 @@ func (r *MySQLRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-
 // 🔹 LIST USERS (phân trang)
 
 func (r *MySQLRepository) List(ctx context.Context, page, pageSize int32) ([]*User, int32, error) {
@@ -212,7 +212,7 @@ func (r *MySQLRepository) List(ctx context.Context, page, pageSize int32) ([]*Us
 
 	// Lấy danh sách user
 	query := `
-		SELECT id, email, password, full_name, referrer_id, created_at
+		SELECT id, email, password, full_name, referrer_id, created_at, role
 		FROM users
 		ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
@@ -234,6 +234,7 @@ func (r *MySQLRepository) List(ctx context.Context, page, pageSize int32) ([]*Us
 			&user.FullName,
 			&referrerID,
 			&user.CreatedAt,
+			&user.Role,
 		)
 		if err != nil {
 			return nil, 0, fmt.Errorf("lỗi scan user: %v", err)
@@ -247,7 +248,6 @@ func (r *MySQLRepository) List(ctx context.Context, page, pageSize int32) ([]*Us
 	return users, total, nil
 }
 
-
 // 🔹 GET REFERRALS
 
 func (r *MySQLRepository) GetReferrals(ctx context.Context, userID string) ([]*User, error) {
@@ -255,7 +255,7 @@ func (r *MySQLRepository) GetReferrals(ctx context.Context, userID string) ([]*U
 	defer cancel()
 
 	query := `
-		SELECT id, email, password, full_name, referrer_id, created_at
+		SELECT id, email, password, full_name, referrer_id, created_at, role
 		FROM users
 		WHERE referrer_id = ?
 		ORDER BY created_at DESC
@@ -277,6 +277,7 @@ func (r *MySQLRepository) GetReferrals(ctx context.Context, userID string) ([]*U
 			&user.FullName,
 			&referrerID,
 			&user.CreatedAt,
+			&user.Role,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("lỗi scan referral: %v", err)
@@ -327,7 +328,7 @@ func (r *MySQLRepository) GetActiveUsersCount(ctx context.Context, since time.Ti
 	query := `SELECT COUNT(DISTINCT id) FROM users WHERE last_login_at >= ?`
 	err := r.db.QueryRowContext(ctx, query, since).Scan(&count)
 	if err != nil {
-		return 0,fmt.Errorf("lỗi đếm active users: %v", err)
+		return 0, fmt.Errorf("lỗi đếm active users: %v", err)
 	}
 	return count, nil
 }

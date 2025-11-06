@@ -2,7 +2,7 @@
 
 ## Giới thiệu 🚀
 
-Project này là một microservice quản lý người dùng được xây dựng bằng Go, sử dụng gRPC làm giao thức giao tiếp chính và cung cấp cả HTTP API công khai thông qua Gin framework (hoặc có thể dùng gRPC-Gateway). Dịch vụ bao gồm các chức năng đăng ký, đăng nhập, quản lý thông tin người dùng cơ bản, xác thực bằng JWT (với cơ chế blacklist), và sử dụng đa dạng cơ sở dữ liệu (MySQL, ScyllaDB, Redis). Ngoài ra, project còn có tính năng lập lịch (Scheduler) cho các tác vụ nền và tích hợp các công cụ profiling (PProf) và benchmark.
+Project này là một microservice quản lý người dùng được xây dựng bằng Go, sử dụng gRPC làm giao thức giao tiếp chính và cung cấp cả HTTP API công khai thông qua Gin framework (hoặc bạn có thể dùng gRPC-Gateway). Dịch vụ bao gồm các chức năng đăng ký, đăng nhập, quản lý thông tin người dùng cơ bản, xác thực bằng JWT (với cơ chế blacklist), và sử dụng đa dạng cơ sở dữ liệu (MySQL, ScyllaDB, Redis). Ngoài ra, project còn có tính năng lập lịch (Scheduler) cho các tác vụ nền và tích hợp các công cụ profiling (PProf) và benchmark.
 
 ## Công nghệ sử dụng 🛠️
 
