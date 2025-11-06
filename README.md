@@ -124,3 +124,100 @@ _(Có thể tạm sửa lịch cron thành `@every 1m` trong `scheduler/jobs.go`
 
 - Dừng ứng dụng Go.
 - Chạy: `go test -bench=. -benchmem ./benchmarks`. Lưu kết quả.
+
+BỔ SUNG 
+# Redis ZSET Performance Benchmarks (Go)
+
+Bộ công cụ benchmark (kiểm thử hiệu năng) này được viết bằng Go để đo lường và phân tích hiệu suất của các thao tác trên **Redis Sorted Set (ZSET)** dưới nhiều loại tải (workload) khác nhau.
+
+Mục tiêu là để mô phỏng các kịch bản thực tế (đọc nhiều, ghi nhiều, tải hỗn hợp) và cung cấp các số liệu chi tiết về độ trễ (latency) và thông lượng (throughput).
+
+## 🚀 Tính năng
+
+* **Đa dạng kịch bản:** Bao gồm các bài test cho:
+    * **Read-heavy (Đọc nhiều):** Đo độ trễ của lệnh `ZSCORE`.
+    * **Write-heavy (Ghi nhiều):** So sánh hiệu năng `ZADD` khi dùng và không dùng Pipelining.
+    * **Update (Cập nhật):** Đo độ trễ của lệnh `ZINCRBY` (cập nhật điểm số lặp lại).
+    * **Top-K Queries:** Đo độ trễ của `ZREVRANGE` (lấy top-K phần tử) trên tập dữ liệu lớn.
+    * **Mixed Concurrent (Tải hỗn hợp):** Mô phỏng nhiều client cùng lúc thực hiện 90% đọc và 10% ghi.
+* **Cấu hình linh hoạt:** Dễ dàng tùy chỉnh mọi tham số (số lượng members, số truy vấn, Redis address...) thông qua biến môi trường (Environment Variables).
+* **Số liệu chi tiết:** Ghi lại các số liệu quan trọng bao gồm độ trễ trung bình (mean) và các phân vị (percentiles) `p50`, `p95`, `p99`, `p999`.
+* **Ghi log tự động:** Tự động lưu kết quả ra file `bench_results.csv` và `bench_results.json` để phân tích sau.
+* **Giám sát Server:** Chụp lại thông tin `INFO memory` và `INFO stats` của Redis server tại thời điểm chạy test để đối chiếu.
+
+## ⚙️ Cấu hình
+
+Trước khi chạy, bạn cần thiết lập các biến môi trường để trỏ đến Redis server và tùy chỉnh các tham số benchmark.
+
+### Biến môi trường chính
+
+* `REDIS_ADDR`: Địa chỉ và port của Redis server (ví dụ: `127.0.0.1:6379`).
+* `REDIS_PASSWORD`: Mật khẩu Redis (nếu có).
+* `REDIS_DB`: Chỉ số DB Redis (ví dụ: `0`).
+
+### Biến môi trường cho Test
+
+* `ZSET_MEMBERS`: Số lượng phần tử khởi tạo cho ZSET (mặc định: 5000).
+* `ZSCORE_QUERIES`: Số lượng truy vấn `ZSCORE` trong bài test đọc (mặc định: 1000).
+* `TOPK_MEMBERS`: Số lượng phần tử cho bài test Top-K (mặc định: 1,000,000).
+* `MIXED_CONC`: Số lượng client chạy đồng thời trong bài test hỗn hợp (mặc định: 50).
+* `RUN_HEAVY`: Đặt là `1` để cho phép chạy các bài test nặng (như `TOPK_MEMBERS` > 500k).
+    * Ví dụ: `export RUN_HEAVY=1`
+
+## 🏁 Cách chạy Tests
+
+Bạn có thể chạy tất cả các bài test hoặc chạy từng kịch bản riêng lẻ bằng cách sử dụng cờ `-run` của Go.
+
+```bash
+# Cấu hình địa chỉ Redis (ví dụ)
+export REDIS_ADDR=127.0.0.1:6379
+
+# Chạy một kịch bản cụ thể (ví dụ: ReadHeavy)
+go test ./benchmarks -run Test_Run_ReadHeavy -v
+
+# Chạy kịch bản Top-K (nặng), cần đặt cờ RUN_HEAVY
+export RUN_HEAVY=1
+export TOPK_MEMBERS=1000000
+go test ./benchmarks -run Test_Run_TopK -v
+
+# Chạy kịch bản tải hỗn hợp (concurrent)
+export MIXED_SEED=100000
+export MIXED_CONC=50
+go test ./benchmarks -run Test_Run_Mixed_Concurrent -v
+
+# Chạy tất cả các bài test
+go test ./benchmarks -v
+```
+*(Lưu ý: Thay thế `./benchmarks` bằng đường dẫn thực tế đến thư mục chứa code test của bạn nếu cần)*
+
+## 📊 Hiểu kết quả
+
+### 1. Console Output
+
+Trong quá trình chạy, bạn sẽ thấy các bảng tóm tắt in ra console:
+
+```
+================================================================================
+🏷️  Kịch bản: READ_ZSCORE   |  members=5000, queries=1000, conc=1 (Đọc nhiều, đo percentiles)
+⏱️  Trạng thái: [BẮT ĐẦU]
+--------------------------------------------------------------------------------
+...[SETUP] Bơm 5000 members (took 25.101ms)
+Scenario               members      conc       mean(ms)   p50(ms)    p95(ms)    p99(ms)
+--------------------------------------------------------------------------------
+READ_ZSCORE            5000         1          0.045      0.044      0.052      0.000
+(Giải thích) mean = độ trễ trung bình; p95/p99 = tail latency
+Server: used_memory=1.13M | instantaneous_ops_per_sec=423 | snapshot=info_READ_ZSCORE_...
+--------------------------------------------------------------------------------
+✅ KẾT THÚC: READ_ZSCORE
+================================================================================
+```
+
+* **mean(ms), p50(ms), p95(ms):** Là các số liệu độ trễ (tính bằng mili giây) của các thao tác. `p95=0.052` có nghĩa là 95% các truy vấn hoàn thành dưới 0.052ms.
+
+### 2. File kết quả
+
+Kết quả chi tiết được tự động ghi vào các file sau:
+
+* `bench_results.csv`: Dữ liệu thô ở định dạng CSV, dễ dàng nhập vào Excel hoặc Google Sheets để vẽ biểu đồ.
+* `bench_results.json`: Dữ liệu ở định dạng JSON, mỗi dòng là một bản ghi kết quả.
+* `info_*.txt`: Các file snapshot chứa kết quả `INFO memory` và `INFO stats` của Redis server tại thời điểm test, giúp bạn đối chiếu tình trạng server (ví dụ: bộ nhớ sử dụng, số ops/sec) với kết quả benchmark.
