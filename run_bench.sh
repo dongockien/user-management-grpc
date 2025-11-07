@@ -23,11 +23,18 @@ OUT="bench_output/$TS"
 mkdir -p "$OUT"
 
 # Giá trị mặc định nếu chưa set
-: "${REDIS_ADDR:=127.0.0.1:6379}"
+: "${REDIS_HOST:=127.0.0.1}"
+: "${REDIS_PORT:=6379}"
+
+export REDIS_ADDR="${REDIS_HOST}:${REDIS_PORT}"
+
 : "${RUN_HEAVY:=0}"
 
+export BENCH_RUN_ID=$TS
+
+
 echo "============================"
-echo "Run ID: $TS"
+echo "Run ID: $TS (BENCH_RUN_ID)"
 echo "REDIS_ADDR: $REDIS_ADDR"
 echo "RUN_HEAVY: $RUN_HEAVY"
 echo "Output dir: $OUT"
@@ -57,8 +64,10 @@ fi
 echo "[run_bench] 6) Mixed concurrent workload"
 go test ./benchmarks -run Test_Run_Mixed_Concurrent -v 2>&1 | tee "$OUT/mixed.log"
 
+echo "[run_bench] 7) Read concurrent (ZSCORE Throughput)"
+go test ./benchmarks -run Test_Run_Read_Concurrent -v 2>&1 | tee "$OUT/read_throughput.log"
 # Copy results (CSV/JSON) and info snapshots
 cp bench_results.csv bench_results.json "$OUT/" 2>/dev/null || true
-cp info_*_"$TS".txt "$OUT/" 2>/dev/null || true
+cp info_*_"$TS"_*.txt "$OUT/" 2>/dev/null || true
 
 echo "[run_bench] Done. Results saved to $OUT"

@@ -299,7 +299,7 @@ var (
 	globalSuccess uint64
 	globalFail    uint64
 	// run id để trace
-	runID = time.Now().Format("20060102_150405")
+	runID = getEnvStr("BENCH_RUN_ID", time.Now().Format("20060102_150405"))
 )
 
 // -------------------- Cấu hình: đọc từ biến môi trường (có default) --------------------
@@ -371,6 +371,7 @@ func newClient() *redis.Client {
 		WriteTimeout: 5 * time.Second,
 	})
 }
+
 // -------------------- Helpers: INFO & file --------------------
 func parseInfoSection(s string) map[string]string {
 	m := map[string]string{}
@@ -465,7 +466,8 @@ func writeJSON(path string, obj interface{}) error {
 }
 
 // -------------------- Metrics helpers --------------------
-func percentileFromSortedUs(slice []int64, p float64) float64 {
+// func percentileFromSortedUs(slice []int64, p float64) float64 {
+func percentileFromSortedInt64(slice []int64, p float64) float64 {
 	if len(slice) == 0 {
 		return 0
 	}
@@ -485,25 +487,60 @@ func percentileFromSortedUs(slice []int64, p float64) float64 {
 	return float64(slice[low])*(1-fraction) + float64(slice[high])*fraction
 }
 
-func computePercentiles(lat []int64) (meanMs, p50ms, p95ms, p99ms, p999ms float64) {
-	if len(lat) == 0 {
+func computePercentiles(latNs []int64) (meanMs, p50ms, p95ms, p99ms, p999ms float64) {
+	if len(latNs) == 0 {
 		return 0, 0, 0, 0, 0
 	}
-	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
+	sort.Slice(latNs, func(i, j int) bool { return latNs[i] < latNs[j] })
 	var sum int64
-	for _, v := range lat {
+	for _, v := range latNs {
 		sum += v
 	}
-	mean := float64(sum) / float64(len(lat))
-	p50 := percentileFromSortedUs(lat, 50.0)
-	p95 := percentileFromSortedUs(lat, 95.0)
-	p99 := percentileFromSortedUs(lat, 99.0)
-	p999 := percentileFromSortedUs(lat, 99.9)
-	return mean / 1000.0, p50 / 1000.0, p95 / 1000.0, p99 / 1000.0, p999 / 1000.0
+	meanNs := float64(sum) / float64(len(latNs))
+	// percentileFromSortedUs (maybe)
+	p50 := percentileFromSortedInt64(latNs, 50.0)
+	p95 := percentileFromSortedInt64(latNs, 95.0)
+	p99 := percentileFromSortedInt64(latNs, 99.0)
+	p999 := percentileFromSortedInt64(latNs, 99.9)
+	// return mean / 1000.0, p50 / 1000.0, p95 / 1000.0, p99 / 1000.0, p999 / 1000.0
+	// convert ns -> ms
+	return meanNs / 1e6, p50 / 1e6, p95 / 1e6, p99 / 1e6, p999 / 1e6
+}
+
+// debug helper: kiểm tra slice raw (units = nanoseconds)
+func analyzeSamples(name string, samples []int64) {
+	if samples == nil {
+		fmt.Printf("DEBUG %s: samples = nil\n", name)
+		return
+	}
+	n := len(samples)
+	if n == 0 {
+		fmt.Printf("DEBUG %s: samples empty\n", name)
+		return
+	}
+	min := samples[0]
+	max := samples[0]
+	var zeros int
+	var sum int64
+	for _, v := range samples {
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+		if v == 0 {
+			zeros++
+		}
+		sum += v
+	}
+	meanNs := float64(sum) / float64(n)
+	fmt.Printf("DEBUG %s: count=%d zeros=%d min=%d ns (%.3f µs, %.6f ms) max=%d ns (%.3f µs, %.6f ms) mean=%.3f µs (%.6f ms)\n",
+		name, n, zeros, min, float64(min)/1e3, float64(min)/1e6, max, float64(max)/1e3, float64(max)/1e6, meanNs/1e3, meanNs/1e6)
 }
 
 // -------------------- Redis ops helpers --------------------
-func bulkZAdd(client *redis.Client, key string, n int, batch int) (time.Duration, error) {
+func bulkZAdd(ctx context.Context, client *redis.Client, key string, n int, batch int) (time.Duration, error) {
 	if batch <= 0 {
 		batch = 1000
 	}
@@ -521,6 +558,10 @@ func bulkZAdd(client *redis.Client, key string, n int, batch int) (time.Duration
 			pipe.ZAdd(ctx, key, redis.Z{Score: float64(j), Member: "user:" + strconv.Itoa(j)})
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
+			// Thêm: Kiểm tra xem lỗi có phải do context bị hủy (timeout/cancel) không
+			if err == context.DeadlineExceeded || err == context.Canceled {
+				return 0, fmt.Errorf("context cancelled during pipeline exec: %w", err)
+			}
 			return 0, err
 		}
 	}
@@ -537,7 +578,11 @@ func measureZScoreLatencies(client *redis.Client, key string, members int, queri
 		if _, err := client.ZScore(ctx, key, member).Result(); err != nil && err != redis.Nil {
 			return nil, err
 		}
-		lat = append(lat, time.Since(t0).Microseconds())
+		d := time.Since(t0).Nanoseconds()
+		if d == 0 {
+			d = 1 // tránh 0 ns gây méo percentiles
+		}
+		lat = append(lat, d)
 	}
 	return lat, nil
 }
@@ -576,8 +621,19 @@ func tableHeader() {
 	fmt.Println(strings.Repeat("-", 80))
 }
 
-func tableRow(scenario string, members int, conc int, mean, p50, p95 float64) {
-	fmt.Printf("%-22s %-12d %-8d %-10.3f %-10.3f %-10.3f %-10.3f\n", scenario, members, conc, mean, p50, p95, 0.0)
+func tableRow(scenario string, members int, conc int, mean, p50, p95, p99 float64) {
+	fmt.Printf("%-22s %-12d %-8d %-12.6f %-12.6f %-12.6f %-12.6f\n", scenario, members, conc, mean, p50, p95, p99)
+}
+
+func printMsUsLabel(prefix string, meanMs, p50Ms, p95Ms, p99Ms float64) {
+	// meanMs, p50Ms... được truyền vào ở đơn vị milliseconds (ms)
+	// meanUs, p50Us... là microseconds (µs), giữ 3 chữ số thập phân cho µs
+	meanUs := meanMs * 1000.0
+	p50Us := p50Ms * 1000.0
+	p95Us := p95Ms * 1000.0
+	p99Us := p99Ms * 1000.0
+	fmt.Printf("%s mean=%.6f ms (%.3f µs) | p50=%.6f ms (%.3f µs) | p95=%.6f ms (%.3f µs) | p99=%.6f ms (%.3f µs)\n",
+		prefix, meanMs, meanUs, p50Ms, p50Us, p95Ms, p95Us, p99Ms, p99Us)
 }
 
 // -------------------- JSON record --------------------
@@ -620,7 +676,7 @@ func Test_Run_ReadHeavy(t *testing.T) {
 	key := "bench:zset_read"
 	bannerStart("READ_ZSCORE", fmt.Sprintf("members=%d, queries=%d, conc=1 (Đọc nhiều, đo percentiles)", ZSET_MEMBERS, ZSCORE_QUERIES))
 	// setup
-	durSetup, err := bulkZAdd(client, key, ZSET_MEMBERS, 2000)
+	durSetup, err := bulkZAdd(ctx, client, key, ZSET_MEMBERS, 2000)
 	if err != nil {
 		t.Fatalf("Setup fail: %v", err)
 	}
@@ -634,7 +690,10 @@ func Test_Run_ReadHeavy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Measure fail: %v", err)
 	}
+	analyzeSamples("READ_ZSCORE_raw", lat)
 	mean, p50, p95, p99, p999 := computePercentiles(lat)
+	// in chi tiết bằng hàm helper (giữ định dạng tốt hơn)
+	printMsUsLabel("READ_ZSCORE:", mean, p50, p95, p99)
 	usedMem, instOps, infoFile := collectAndSaveInfo(client, "READ_ZSCORE")
 	// CSV/JSON
 	rec := []string{runID, time.Now().Format(time.RFC3339), "READ_ZSCORE", fmt.Sprintf("members=%d,queries=%d", ZSET_MEMBERS, ZSCORE_QUERIES), "", "", fmt.Sprintf("%.6f", mean), fmt.Sprintf("%.6f", p50), fmt.Sprintf("%.6f", p95), fmt.Sprintf("%.6f", p99), fmt.Sprintf("%.6f", p999), usedMem, instOps, infoFile, ""}
@@ -643,7 +702,7 @@ func Test_Run_ReadHeavy(t *testing.T) {
 	writeJSON("bench_results.json", recJSON)
 	// pretty
 	tableHeader()
-	tableRow("READ_ZSCORE", ZSET_MEMBERS, 1, mean, p50, p95)
+	tableRow("READ_ZSCORE", ZSET_MEMBERS, 1, mean, p50, p95, p99)
 	fmt.Printf("(Giải thích) mean = độ trễ trung bình; p95/p99 = tail latency\n")
 	fmt.Printf("Server: used_memory=%s | instantaneous_ops_per_sec=%s | snapshot=%s\n", usedMem, instOps, infoFile)
 	bannerEnd("READ_ZSCORE")
@@ -655,7 +714,7 @@ func Test_Update_1Key(t *testing.T) {
 	defer client.Close()
 	client.FlushDB(ctx)
 	key := "bench:zset_update1"
-	bulkZAdd(client, key, ZSET_MEMBERS, 2000)
+	bulkZAdd(ctx, client, key, ZSET_MEMBERS, 2000)
 	bannerStart("UPDATE_1KEY", fmt.Sprintf("member=user:123, updates=%d (Đo latency cho 1 thao tác ghi lặp)", UPDATE1_ITERS))
 	lat := make([]int64, 0, UPDATE1_ITERS)
 	for i := 0; i < UPDATE1_ITERS; i++ {
@@ -666,9 +725,17 @@ func Test_Update_1Key(t *testing.T) {
 		} else {
 			atomic.AddUint64(&globalSuccess, 1)
 		}
-		lat = append(lat, time.Since(t0).Microseconds())
+		d := time.Since(t0).Nanoseconds()
+		if d == 0 {
+			d = 1
+		}
+		lat = append(lat, d)
+
 	}
+	// debug / analyze (sau khi đã thu thập)
+	analyzeSamples("UPDATE_1KEY_raw", lat)
 	mean, p50, p95, p99, p999 := computePercentiles(lat)
+	printMsUsLabel("UPDATE_1KEY:", mean, p50, p95, p99)
 	usedMem, instOps, infoFile := collectAndSaveInfo(client, "UPDATE_1KEY")
 	// CSV/JSON
 	rec := []string{runID, time.Now().Format(time.RFC3339), "UPDATE_1KEY", fmt.Sprintf("member=user:123,n=%d", UPDATE1_ITERS), "", "", fmt.Sprintf("%.6f", mean), fmt.Sprintf("%.6f", p50), fmt.Sprintf("%.6f", p95), fmt.Sprintf("%.6f", p99), fmt.Sprintf("%.6f", p999), usedMem, instOps, infoFile, "ZINCRBY repeated"}
@@ -677,7 +744,7 @@ func Test_Update_1Key(t *testing.T) {
 	writeJSON("bench_results.json", recJSON)
 	// print
 	tableHeader()
-	tableRow("UPDATE_1KEY", ZSET_MEMBERS, 1, mean, p50, p95)
+	tableRow("UPDATE_1KEY", ZSET_MEMBERS, 1, mean, p50, p95, p99)
 	fmt.Printf("(Giải thích) ops thành công=%d | ops thất bại=%d\n", atomic.LoadUint64(&globalSuccess), atomic.LoadUint64(&globalFail))
 	fmt.Printf("Server: used_memory=%s | instantaneous_ops_per_sec=%s | snapshot=%s\n", usedMem, instOps, infoFile)
 	bannerEnd("UPDATE_1KEY")
@@ -690,7 +757,7 @@ func Test_Run_WriteHeavy(t *testing.T) {
 	// timeout cho test nặng
 	ctxT, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	_ = ctxT
+
 	client.FlushDB(ctx)
 	bannerStart("UPDATE_10K", fmt.Sprintf("n=%d, compare non-pipe vs pipe (batch sizes)", UPDATE10K_N))
 	n := UPDATE10K_N
@@ -699,12 +766,13 @@ func Test_Run_WriteHeavy(t *testing.T) {
 		batch int
 	}{{"non-pipeline", 1}, {"pipeline-1k", PIPE_BATCH1}, {"pipeline-10k", PIPE_BATCH2}}
 	for _, m := range modes {
-		dur, err := bulkZAdd(client, "bench:update_10k_"+m.name, n, m.batch)
+		dur, err := bulkZAdd(ctxT, client, "bench:update_10k_"+m.name, n, m.batch)
 		if err != nil {
 			t.Fatalf("bulkZAdd %s fail: %v", m.name, err)
 		}
-		totalMs := float64(dur.Microseconds()) / 1000.0
-		totalSec := float64(dur.Microseconds()) / 1000000.0
+		// float64(dur.Microseconds())
+		totalMs := dur.Seconds() * 1000.0
+		totalSec := dur.Seconds()
 		opsPerSec := float64(n) / totalSec
 		usedMem, instOps, infoFile := collectAndSaveInfo(client, "UPDATE_10K_"+m.name)
 		// CSV/JSON
@@ -731,7 +799,7 @@ func Test_Run_TopK(t *testing.T) {
 	bannerStart("TOPK", fmt.Sprintf("members=%d, topk=%d, runs=%d (Lấy top-k nhiều lần để lấy percentiles)", TOPK_MEMBERS, TOPK_K, TOPK_RUNS))
 	// bulk insert
 	start := time.Now()
-	if _, err := bulkZAdd(client, key, TOPK_MEMBERS, 10000); err != nil {
+	if _, err := bulkZAdd(ctx, client, key, TOPK_MEMBERS, 10000); err != nil {
 		t.Fatalf("bulkZAdd fail: %v", err)
 	}
 	fmt.Printf("...[SETUP] Đã bơm %d members (took %s)\n", TOPK_MEMBERS, time.Since(start))
@@ -742,12 +810,17 @@ func Test_Run_TopK(t *testing.T) {
 	}
 	usedMem, instOps, infoFile := collectAndSaveInfo(client, "TOPK")
 	// convert runsDur to slice for percentiles
-	runsUs := make([]int64, 0, len(runsDur))
+	runsNs := make([]int64, 0, len(runsDur))
 	for _, d := range runsDur {
-		runsUs = append(runsUs, d.Microseconds())
+		runsNs = append(runsNs, d.Nanoseconds())
 	}
-	meanMs, p50, p95, p99, p999 := computePercentiles(runsUs)
-	avgMs := float64(avgDur.Microseconds()) / 1000.0
+	analyzeSamples("TOPK_runs_raw", runsNs)
+	meanMs, p50, p95, p99, p999 := computePercentiles(runsNs)
+	printMsUsLabel("TOPK:", meanMs, p50, p95, p99)
+	meanUs := meanMs * 1000
+	fmt.Printf("mean=%.6f ms (%.0f µs)\n", meanMs, meanUs)
+	// avgMs := float64(avgDur.Nanoseconds()) * 1000.0
+	avgMs := avgDur.Seconds() * 1000.0
 	// sample top1
 	res, _ := client.ZRevRangeWithScores(ctx, key, 0, 0).Result()
 	var top1 string
@@ -763,7 +836,7 @@ func Test_Run_TopK(t *testing.T) {
 	writeJSON("bench_results.json", recJSON)
 	// print
 	tableHeader()
-	tableRow("TOPK", TOPK_MEMBERS, 1, meanMs, p50, p95)
+	tableRow("TOPK", TOPK_MEMBERS, 1, meanMs, p50, p95, p99)
 	fmt.Printf("(Giải thích) avg_ms = trung bình của các lần gọi TopK; p95/p99 là tail latency\n")
 	fmt.Printf("Top1 sample: %s (score=%.0f)\n", top1, top1Score)
 	fmt.Printf("Server: used_memory=%s | instantaneous_ops_per_sec=%s | snapshot=%s\n", usedMem, instOps, infoFile)
@@ -777,7 +850,7 @@ func Test_Run_Mixed_Concurrent(t *testing.T) {
 	client.FlushDB(ctx)
 	key := "bench:mixed"
 	// seed data
-	if _, err := bulkZAdd(client, key, MIXED_SEED, 5000); err != nil {
+	if _, err := bulkZAdd(ctx, client, key, MIXED_SEED, 5000); err != nil {
 		t.Fatalf("seed fail: %v", err)
 	}
 	bannerStart("MIXED", fmt.Sprintf("members=%d, conc=%d, opsPerClient=%d (read:write = 90:10)", MIXED_SEED, MIXED_CONC, MIXED_OPS))
@@ -797,12 +870,18 @@ func Test_Run_Mixed_Concurrent(t *testing.T) {
 					idx := r.Intn(MIXED_SEED)
 					start := time.Now()
 					client.ZScore(ctx, key, fmt.Sprintf("user:%d", idx))
-					d := time.Since(start).Microseconds()
+					d := time.Since(start).Nanoseconds()
+					if d == 0 {
+						d = 1
+					}
 					local = append(local, d)
 				} else { // 10% ghi
 					start := time.Now()
 					client.ZAdd(ctx, key, redis.Z{Score: float64(r.Intn(1000000)), Member: fmt.Sprintf("user:write:%d", r.Intn(1000000))})
-					d := time.Since(start).Microseconds()
+					d := time.Since(start).Nanoseconds()
+					if d == 0 {
+						d = 1
+					}
 					local = append(local, d)
 				}
 			}
@@ -817,7 +896,9 @@ func Test_Run_Mixed_Concurrent(t *testing.T) {
 		total += len(s)
 		all = append(all, s...)
 	}
+	analyzeSamples("MIXED_raw", all)
 	mean, p50, p95, p99, p999 := computePercentiles(all)
+	printMsUsLabel("MIXED:", mean, p50, p95, p99)
 	usedMem, instOps, infoFile := collectAndSaveInfo(client, "MIXED")
 	rec := []string{runID, time.Now().Format(time.RFC3339), "MIXED", fmt.Sprintf("members=%d,conc=%d,opsPerClient=%d", MIXED_SEED, MIXED_CONC, MIXED_OPS), "", "", fmt.Sprintf("%.6f", mean), fmt.Sprintf("%.6f", p50), fmt.Sprintf("%.6f", p95), fmt.Sprintf("%.6f", p99), fmt.Sprintf("%.6f", p999), usedMem, instOps, infoFile, "readRatio=90/10"}
 	writeCSV("bench_results.csv", rec)
@@ -825,10 +906,125 @@ func Test_Run_Mixed_Concurrent(t *testing.T) {
 	writeJSON("bench_results.json", recJSON)
 	// print
 	tableHeader()
-	tableRow("MIXED", MIXED_SEED, MIXED_CONC, mean, p50, p95)
+	tableRow("MIXED", MIXED_SEED, MIXED_CONC, mean, p50, p95, p99)
 	fmt.Printf("(Giải thích) total samples=%d | mean/p50/p95/p99 (ms)\n", total)
 	fmt.Printf("Server: used_memory=%s | instantaneous_ops_per_sec=%s | snapshot=%s\n", usedMem, instOps, infoFile)
 	bannerEnd("MIXED")
 }
 
 // EOF
+
+// TEST: READ CONCURRENT (đo throughput)
+// Đo thông lượng 100% ZSCORE, sử dụng các biến MIXED_* để cấu hình
+func Test_Run_Read_Concurrent(t *testing.T) {
+	client := newClient()
+	defer client.Close()
+	client.FlushDB(ctx)
+	key := "bench:read_conc"
+
+	// Reset bộ đếm toàn cục
+	atomic.StoreUint64(&globalSuccess, 0)
+	atomic.StoreUint64(&globalFail, 0)
+
+	// 1. SETUP: Dùng MIXED_SEED (mặc định 100k)
+	if _, err := bulkZAdd(ctx, client, key, MIXED_SEED, 5000); err != nil {
+		t.Fatalf("seed fail: %v", err)
+	}
+
+	bannerStart("READ_CONC", fmt.Sprintf("members=%d, conc=%d, opsPerClient=%d (Đo throughput 100%% ZSCORE)", MIXED_SEED, MIXED_CONC, MIXED_OPS))
+
+	per := make([][]int64, MIXED_CONC) // Vẫn thu thập latency
+	var wg sync.WaitGroup
+
+	// TÍNH TOÁN CHO THROUGHPUT
+	totalOps := uint64(MIXED_CONC * MIXED_OPS)
+
+	// BẮT ĐẦU ĐO THỜI GIAN
+	t0 := time.Now()
+
+	for c := 0; c < MIXED_CONC; c++ {
+		wg.Add(1)
+		cid := c
+		go func(cid int) {
+			defer wg.Done()
+			r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(cid)))
+			local := make([]int64, 0, MIXED_OPS)
+
+			for i := 0; i < MIXED_OPS; i++ {
+				idx := r.Intn(MIXED_SEED)
+				member := "user:" + strconv.Itoa(idx)
+				start := time.Now()
+				if _, err := client.ZScore(ctx, key, member).Result(); err != nil && err != redis.Nil {
+					atomic.AddUint64(&globalFail, 1)
+				} else {
+					atomic.AddUint64(&globalSuccess, 1)
+				}
+				d := time.Since(start).Nanoseconds()
+				if d == 0 {
+					d = 1
+				}
+				local = append(local, d)
+
+			}
+			per[cid] = local
+		}(cid)
+	}
+
+	// CHỜ TẤT CẢ HOÀN THÀNH
+	wg.Wait()
+
+	// KẾT THÚC ĐO THỜI GIAN
+	totalDur := time.Since(t0)
+	totalDurSec := totalDur.Seconds()
+	opsPerSec := float64(totalOps) / totalDurSec
+	totalMs := totalDur.Seconds() * 1000.0
+
+	// 2. TÍNH TOÁN LATENCY (như cũ)
+	all := make([]int64, 0, totalOps)
+	for _, s := range per {
+		all = append(all, s...)
+	}
+	analyzeSamples("READ_CONC_raw", all)
+	mean, p50, p95, p99, p999 := computePercentiles(all)
+	printMsUsLabel("READ_CONC:", mean, p50, p95, p99)
+	// 3. GHI LOG
+	usedMem, instOps, infoFile := collectAndSaveInfo(client, "READ_CONC")
+
+	// CSV/JSON
+	rec := []string{
+		runID, time.Now().Format(time.RFC3339), "READ_CONC",
+		fmt.Sprintf("members=%d,conc=%d,opsPerClient=%d", MIXED_SEED, MIXED_CONC, MIXED_OPS),
+		fmt.Sprintf("%.6f", totalMs), fmt.Sprintf("%.3f", opsPerSec), // Ghi lại total_ms và ops_per_sec
+		fmt.Sprintf("%.6f", mean), fmt.Sprintf("%.6f", p50), fmt.Sprintf("%.6f", p95), fmt.Sprintf("%.6f", p99), fmt.Sprintf("%.6f", p999),
+		usedMem, instOps, infoFile, "100% read",
+	}
+	writeCSV("bench_results.csv", rec)
+
+	recJSON := BenchRecord{
+		RunID:     runID,
+		Timestamp: time.Now().Format(time.RFC3339),
+		Scenario:  "READ_CONC",
+		Params:    map[string]interface{}{"members": MIXED_SEED, "conc": MIXED_CONC, "opsPerClient": MIXED_OPS},
+		// Ghi lại cả throughput và latency
+		Results:  map[string]float64{"total_ms": totalMs, "ops_per_sec": opsPerSec, "mean_ms": mean, "p50_ms": p50, "p95_ms": p95, "p99_ms": p99, "p999_ms": p999},
+		Server:   map[string]string{"used_memory": usedMem, "instant_ops": instOps},
+		InfoFile: infoFile,
+		Notes:    "100% read throughput",
+	}
+	writeJSON("bench_results.json", recJSON)
+
+	// 4. IN KẾT QUẢ
+	// In bảng latency (như cũ)
+	tableHeader()
+	tableRow("READ_CONC", MIXED_SEED, MIXED_CONC, mean, p50, p95, p99)
+	fmt.Println(strings.Repeat("-", 80))
+
+	// In kết quả Throughput
+	fmt.Printf("📊 KẾT QUẢ THÔNG LƯỢNG (Throughput):\n")
+	fmt.Printf("   Tổng thời gian: %.3f ms\n", totalMs)
+	fmt.Printf("   Tổng ops: %d (thành công: %d, thất bại: %d)\n", totalOps, atomic.LoadUint64(&globalSuccess), atomic.LoadUint64(&globalFail))
+	fmt.Printf("   Thông lượng: %.2f ops/sec\n", opsPerSec)
+
+	fmt.Printf("Server: used_memory=%s | instantaneous_ops_per_sec=%s | snapshot=%s\n", usedMem, instOps, infoFile)
+	bannerEnd("READ_CONC")
+}

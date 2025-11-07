@@ -1230,7 +1230,7 @@ const (
 	userRoleKey contextKey = "userRole"
 )
 
-// ⭐️⭐️⭐️ SỬA 1: Khai báo 'scyllaRepo' ở đây (biến toàn cục) ⭐️⭐️⭐️
+
 // Bằng cách này, CẢ 'main' và 'authInterceptor' đều "nhìn thấy" nó.
 var scyllaRepo *database.ScyllaRepo
 
@@ -1332,7 +1332,7 @@ func main() {
 
 	// === Khởi tạo gRPC Server (Req 1) ===
 	grpcServer := grpc.NewServer(
-		// ⭐️ SỬA 3: Truyền 'authService' (đã có) vào 'authInterceptor'
+		
 		grpc.UnaryInterceptor(authInterceptor(authService)),
 	)
 	proto.RegisterUserServiceServer(grpcServer, userService)
@@ -1383,7 +1383,7 @@ func main() {
 	waitForShutdown(grpcServer, httpSrv, profiler, schedulerCancel, notificationService)
 }
 
-// 🎯 NOTIFICATION CLIENT WRAPPER (Giữ nguyên)
+// 🎯 NOTIFICATION CLIENT WRAPPER 
 type NotificationClientWrapper struct{ service *notification.Service }
 func NewNotificationClientWrapper(service *notification.Service) *NotificationClientWrapper {
 	return &NotificationClientWrapper{service: service}
@@ -1404,7 +1404,7 @@ func (w *NotificationClientWrapper) SendNotification(ctx context.Context, req *p
 }
 
 
-// 🛡️ gRPC AUTHENTICATION INTERCEPTOR (Giữ nguyên)
+// 🛡️ gRPC AUTHENTICATION INTERCEPTOR 
 // (Hàm này bây giờ đã "nhìn thấy" biến 'scyllaRepo' toàn cục)
 func authInterceptor(authService *auth.Service) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
@@ -1470,9 +1470,9 @@ func authInterceptor(authService *auth.Service) grpc.UnaryServerInterceptor {
 	}
 }
 
-// 🛑 GRACEFUL SHUTDOWN HANDLER (Giữ nguyên)
+
 // (Hàm này bây giờ đã "nhìn thấy" biến 'scyllaRepo' toàn cục,
-// nhưng nó không dùng đến nên không cần sửa)
+
 func waitForShutdown(grpcServer *grpc.Server, httpSrv *http.Server, profiler *tracing.Profiler, schedulerCancel context.CancelFunc, notificationService *notification.Service) {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -1508,8 +1508,8 @@ func waitForShutdown(grpcServer *grpc.Server, httpSrv *http.Server, profiler *tr
 }
 
 
-// 🌐 HTTP HANDLERS (Gin) (Toàn bộ phần này giữ nguyên 100%)
-// ... (Tất cả các hàm từ 'type HTTPHandler struct' đến hết file) ...
+
+
 type HTTPHandler struct {
 	userService *user.Service
 	authService *auth.Service
